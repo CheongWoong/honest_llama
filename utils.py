@@ -91,7 +91,7 @@ def tokenized_tqa(dataset, tokenizer):
             prompt = format_truthfulqa(question, choice)
             if i == 0 and j == 0: 
                 print(prompt)
-            prompt = tokenizer(prompt, return_tensors = 'pt').input_ids
+            prompt = tokenizer(prompt, return_tensors = 'pt')
             all_prompts.append(prompt)
             all_labels.append(label)
     
@@ -111,7 +111,7 @@ def tokenized_tqa_gen_end_q(dataset, tokenizer):
         for j in range(len(dataset[i]['correct_answers'])): 
             answer = dataset[i]['correct_answers'][j]
             prompt = format_truthfulqa_end_q(question, answer, rand_question)
-            prompt = tokenizer(prompt, return_tensors = 'pt').input_ids
+            prompt = tokenizer(prompt, return_tensors = 'pt')
             all_prompts.append(prompt)
             all_labels.append(1)
             all_categories.append(category)
@@ -119,7 +119,7 @@ def tokenized_tqa_gen_end_q(dataset, tokenizer):
         for j in range(len(dataset[i]['incorrect_answers'])):
             answer = dataset[i]['incorrect_answers'][j]
             prompt = format_truthfulqa_end_q(question, answer, rand_question)
-            prompt = tokenizer(prompt, return_tensors = 'pt').input_ids
+            prompt = tokenizer(prompt, return_tensors = 'pt')
             all_prompts.append(prompt)
             all_labels.append(0)
             all_categories.append(category)
@@ -138,7 +138,7 @@ def tokenized_tqa_gen(dataset, tokenizer):
         for j in range(len(dataset[i]['correct_answers'])): 
             answer = dataset[i]['correct_answers'][j]
             prompt = format_truthfulqa(question, answer)
-            prompt = tokenizer(prompt, return_tensors = 'pt').input_ids
+            prompt = tokenizer(prompt, return_tensors = 'pt')
             all_prompts.append(prompt)
             all_labels.append(1)
             all_categories.append(category)
@@ -146,7 +146,7 @@ def tokenized_tqa_gen(dataset, tokenizer):
         for j in range(len(dataset[i]['incorrect_answers'])):
             answer = dataset[i]['incorrect_answers'][j]
             prompt = format_truthfulqa(question, answer)
-            prompt = tokenizer(prompt, return_tensors = 'pt').input_ids
+            prompt = tokenizer(prompt, return_tensors = 'pt')
             all_prompts.append(prompt)
             all_labels.append(0)
             all_categories.append(category)
@@ -160,17 +160,31 @@ def get_llama_activations_bau(model, prompt, device):
 
     with torch.no_grad():
         prompt = prompt.to(device)
-        with TraceDict(model, HEADS+MLPS) as ret:
-            output = model(prompt, output_hidden_states = True)
+        with TraceDict(model, HEADS+MLPS, retain_input=True) as ret:
+            output = model(**prompt, output_hidden_states = True)
         hidden_states = output.hidden_states
         hidden_states = torch.stack(hidden_states, dim = 0).squeeze()
         hidden_states = hidden_states.detach().cpu().numpy()
-        head_wise_hidden_states = [ret[head].output.squeeze().detach().cpu() for head in HEADS]
+        head_wise_hidden_states = [ret[head].input.squeeze().detach().cpu() for head in HEADS]
         head_wise_hidden_states = torch.stack(head_wise_hidden_states, dim = 0).squeeze().numpy()
         mlp_wise_hidden_states = [ret[mlp].output.squeeze().detach().cpu() for mlp in MLPS]
         mlp_wise_hidden_states = torch.stack(mlp_wise_hidden_states, dim = 0).squeeze().numpy()
 
     return hidden_states, head_wise_hidden_states, mlp_wise_hidden_states
+
+
+def get_llama_activations_pyvene(intervenable, prompt, device): 
+    with torch.no_grad():
+        prompt = prompt.to(device)
+        output, _ = intervenable(prompt)
+        activations = output[1]
+        layer_wise_hidden_states = [output[1][layer].squeeze().detach().cpu() for layer in range(intervenable.model.config.num_hidden_layers)]
+        layer_wise_hidden_states = torch.stack(layer_wise_hidden_states, dim = 0).squeeze().numpy()
+        head_wise_hidden_states = [output[1][layer].squeeze().detach().cpu() for layer in range(intervenable.model.config.num_hidden_layers, intervenable.model.config.num_hidden_layers*2)]
+        head_wise_hidden_states = torch.stack(head_wise_hidden_states, dim = 0).squeeze().numpy()
+        mlp_wise_hidden_states = None
+
+    return layer_wise_hidden_states, head_wise_hidden_states, mlp_wise_hidden_states
 
 
 def get_llama_logits(model, prompt, device): 
@@ -695,7 +709,7 @@ def get_top_heads(train_idxs, val_idxs, separated_activations, separated_labels,
         random_idxs = np.random.choice(num_heads*num_layers, num_heads*num_layers, replace=False)
         top_heads = [flattened_idx_to_layer_head(idx, num_heads) for idx in random_idxs[:num_to_intervene]]
 
-    return top_heads, probes
+    return top_heads, probes, all_head_accs_np
 
 def get_interventions_dict(top_heads, probes, tuning_activations, num_heads, use_center_of_mass, use_random_dir, com_directions): 
 

@@ -53,16 +53,11 @@ def main():
     parser.add_argument('--dataset_name', type=str, default='tqa_mc2', help='feature bank for training probes')
     parser.add_argument('--activations_dataset', type=str, default='tqa_gen_end_q', help='feature bank for calculating std along direction')
     parser.add_argument('--num_heads', type=int, default=48, help='K, number of top heads to intervene on')
-    parser.add_argument('--alpha', type=float, default=15, help='alpha, intervention strength')
     parser.add_argument("--num_fold", type=int, default=2, help="number of folds")
     parser.add_argument('--val_ratio', type=float, help='ratio of validation set size to development set size', default=0.2)
-    parser.add_argument('--use_center_of_mass', action='store_true', help='use center of mass direction', default=False)
     parser.add_argument('--use_random_dir', action='store_true', help='use random direction', default=False)
     parser.add_argument('--device', type=int, default=0, help='device')
     parser.add_argument('--seed', type=int, default=42, help='seed')
-    parser.add_argument('--judge_name', type=str, required=False)
-    parser.add_argument('--info_name', type=str, required=False)
-    parser.add_argument('--instruction_prompt', default='default', help='instruction prompt for truthfulqa benchmarking, "default" or "informative"', type=str, required=False)
 
     args = parser.parse_args()
 
@@ -117,6 +112,7 @@ def main():
     tuning_labels = np.load(f"../features/{args.model_name}_{activations_dataset}_labels.npy")
 
     separated_head_wise_activations, separated_labels, idxs_to_split_at = get_separated_activations(labels, head_wise_activations)
+
     # run k-fold cross validation
     results = []
     for i in range(args.num_fold):
@@ -135,59 +131,11 @@ def main():
         df.iloc[val_set_idxs].to_csv(f"splits/fold_{i}_val_seed_{args.seed}.csv", index=False)
         df.iloc[test_idxs].to_csv(f"splits/fold_{i}_test_seed_{args.seed}.csv", index=False)
 
-        # get directions
-        if args.use_center_of_mass:
-            com_directions = get_com_directions(num_layers, num_heads, train_set_idxs, val_set_idxs, separated_head_wise_activations, separated_labels)
-        else:
-            com_directions = None
-        top_heads, probes, _ = get_top_heads(train_set_idxs, val_set_idxs, separated_head_wise_activations, separated_labels, num_layers, num_heads, args.seed, args.num_heads, args.use_random_dir)
+        # probe
+        top_heads, probes, all_head_accs_np = get_top_heads(train_set_idxs, val_set_idxs, separated_head_wise_activations, separated_labels, num_layers, num_heads, args.seed, args.num_heads, args.use_random_dir)
+        np.save(f'../features/{args.model_name}_{args.dataset_name}_probe_acc_fold_{i}.npy', all_head_accs_np)
 
         print("Heads intervened: ", sorted(top_heads))
-    
-        interventions = get_interventions_dict(top_heads, probes, tuning_activations, num_heads, args.use_center_of_mass, args.use_random_dir, com_directions)
-
-        def lt_modulated_vector_add(head_output, layer_name, start_edit_location='lt'): 
-            head_output = rearrange(head_output, 'b s (h d) -> b s h d', h=num_heads)
-            for head, direction, proj_val_std in interventions[layer_name]:
-                direction_to_add = torch.tensor(direction).to(head_output.device.index)
-                if start_edit_location == 'lt': 
-                    head_output[:, -1, head, :] += args.alpha * proj_val_std * direction_to_add
-                else: 
-                    head_output[:, start_edit_location:, head, :] += args.alpha * proj_val_std * direction_to_add
-            head_output = rearrange(head_output, 'b s h d -> b s (h d)')
-            return head_output
-
-        filename = f'{args.model_prefix}{args.model_name}_seed_{args.seed}_top_{args.num_heads}_heads_alpha_{int(args.alpha)}_fold_{i}'
-
-        if args.use_center_of_mass:
-            filename += '_com'
-        if args.use_random_dir:
-            filename += '_random'
-                                
-        curr_fold_results = alt_tqa_evaluate(
-            models={args.model_name: model},
-            metric_names=['judge', 'info', 'mc'],
-            input_path=f'splits/fold_{i}_test_seed_{args.seed}.csv',
-            output_path=f'results_dump/answer_dump/{filename}.csv',
-            summary_path=f'results_dump/summary_dump/{filename}.csv',
-            device="cuda", 
-            interventions=interventions, 
-            intervention_fn=lt_modulated_vector_add, 
-            instruction_prompt=args.instruction_prompt,
-            judge_name=args.judge_name, 
-            info_name=args.info_name
-        )
-
-        print(f"FOLD {i}")
-        print(curr_fold_results)
-
-        curr_fold_results = curr_fold_results.to_numpy()[0].astype(float)
-        results.append(curr_fold_results)
-    
-    results = np.array(results)
-    final = results.mean(axis=0)
-
-    print(f'alpha: {args.alpha}, heads: {args.num_heads}, True*Info Score: {final[1]*final[0]}, True Score: {final[1]}, Info Score: {final[0]}, MC1 Score: {final[2]}, MC2 Score: {final[3]}, CE Loss: {final[4]}, KL wrt Original: {final[5]}')
 
 if __name__ == "__main__":
     main()

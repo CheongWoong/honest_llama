@@ -6,7 +6,8 @@ import numpy as np
 import pickle
 import sys
 sys.path.append('../')
-from utils import get_llama_activations_bau, tokenized_tqa, tokenized_tqa_gen, tokenized_tqa_gen_end_q
+import pyvene as pv
+from utils import get_llama_activations_pyvene, get_llama_activations_bau, tokenized_tqa, tokenized_tqa_gen, tokenized_tqa_gen_end_q
 import llama
 import pickle
 import argparse
@@ -70,8 +71,15 @@ def main():
     all_head_wise_activations = []
 
     print("Getting activations")
+    probing_config = pv.IntervenableConfig(
+        [{"layer": layer, "component": f"model.layers.{layer}.output", "intervention_type": pv.CollectIntervention} for layer in range(model.config.num_hidden_layers)] + # layer-wise activations
+        [{"layer": layer, "component": f"model.layers.{layer}.self_attn.o_proj.input", "intervention_type": pv.CollectIntervention} for layer in range(model.config.num_hidden_layers)] # head-wise activations
+    )
+    intervenable = pv.IntervenableModel(probing_config, model)
+    intervenable.disable_model_gradients()
     for prompt in tqdm(prompts):
-        layer_wise_activations, head_wise_activations, _ = get_llama_activations_bau(model, prompt, device)
+        # layer_wise_activations, head_wise_activations, _ = get_llama_activations_bau(model, prompt, device)
+        layer_wise_activations, head_wise_activations, _ = get_llama_activations_pyvene(intervenable, prompt, device)
         all_layer_wise_activations.append(layer_wise_activations[:,-1,:].copy())
         all_head_wise_activations.append(head_wise_activations[:,-1,:].copy())
 
