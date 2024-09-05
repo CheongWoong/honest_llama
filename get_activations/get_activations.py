@@ -8,7 +8,6 @@ import sys
 sys.path.append('../')
 from nnsight import LanguageModel
 from utils import get_llama_activations_nnsight, get_llama_activations_bau, tokenized_tqa, tokenized_tqa_gen, tokenized_tqa_gen_end_q
-import llama
 import pickle
 import argparse
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
