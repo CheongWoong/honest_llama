@@ -14,7 +14,7 @@ import pandas as pd
 import warnings
 from einops import rearrange
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from baukit import Trace, TraceDict
+# from baukit import Trace, TraceDict
 import sklearn
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.linear_model import LogisticRegression
@@ -173,18 +173,16 @@ def get_llama_activations_bau(model, prompt, device):
     return hidden_states, head_wise_hidden_states, mlp_wise_hidden_states
 
 
-def get_llama_activations_pyvene(intervenable, prompt, device): 
+def get_llama_activations_nnsight(model, prompt, device): 
     with torch.no_grad():
-        prompt = prompt.to(device)
-        output, _ = intervenable(prompt)
-        activations = output[1]
-        layer_wise_hidden_states = [output[1][layer].squeeze().detach().cpu() for layer in range(intervenable.model.config.num_hidden_layers)]
-        layer_wise_hidden_states = torch.stack(layer_wise_hidden_states, dim = 0).squeeze().numpy()
-        head_wise_hidden_states = [output[1][layer].squeeze().detach().cpu() for layer in range(intervenable.model.config.num_hidden_layers, intervenable.model.config.num_hidden_layers*2)]
+        with model.trace(prompt) as tracer:
+            hidden_states = [model.model.layers[i].output[0].squeeze().detach().cpu().save() for i in range(model.config.num_hidden_layers)]
+            head_wise_hidden_states = [model.model.layers[i].self_attn.o_proj.input.squeeze().detach().cpu().save() for i in range(model.config.num_hidden_layers)]
+        hidden_states = torch.stack(hidden_states, dim = 0).squeeze().numpy()
         head_wise_hidden_states = torch.stack(head_wise_hidden_states, dim = 0).squeeze().numpy()
         mlp_wise_hidden_states = None
 
-    return layer_wise_hidden_states, head_wise_hidden_states, mlp_wise_hidden_states
+    return hidden_states, head_wise_hidden_states, mlp_wise_hidden_states
 
 
 def get_llama_logits(model, prompt, device): 
