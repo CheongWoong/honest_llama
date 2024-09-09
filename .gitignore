@@ -159,11 +159,7 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-features
 directions
 datasets
-validation/results_dump
-validation/splits
-validation/sh*.sh
-validation/check_results.ipynb
 TruthfulQA
+validation/debug_model_architecture.ipynb

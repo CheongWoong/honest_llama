@@ -1,47 +1,63 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from einops import rearrange
 import numpy as np
 import pickle
 import os
-import shutil
 from tqdm import tqdm
 import pandas as pd
 import numpy as np
 import argparse
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig
+
 import sys
 sys.path.append('../')
 from utils import alt_tqa_evaluate, flattened_idx_to_layer_head, layer_head_to_flattened_idx, get_interventions_dict, get_top_heads, get_separated_activations, get_com_directions
 
 HF_NAMES = {
+    # Base models
     # 'llama_7B': 'baffo32/decapoda-research-llama-7B-hf',
     'llama_7B': 'huggyllama/llama-7b',
-    'alpaca_7B': 'circulus/alpaca-7b', 
-    'vicuna_7B': 'AlekseyKorshuk/vicuna-7b', 
+    'alpaca_7B': 'circulus/alpaca-7b',
+    'vicuna_7B': 'AlekseyKorshuk/vicuna-7b',
     'llama2_chat_7B': 'meta-llama/Llama-2-7b-chat-hf',
     'llama2_chat_13B': 'meta-llama/Llama-2-13b-chat-hf',
     'llama2_chat_70B': 'meta-llama/Llama-2-70b-chat-hf',
     'llama3_8B': 'meta-llama/Meta-Llama-3-8B',
     'llama3_8B_instruct': 'meta-llama/Meta-Llama-3-8B-Instruct',
     'llama3_70B': 'meta-llama/Meta-Llama-3-70B',
-    'llama3_70B_instruct': 'meta-llama/Meta-Llama-3-70B-Instruct'
+    'llama3_70B_instruct': 'meta-llama/Meta-Llama-3-70B-Instruct',
+
+    # HF edited models (ITI baked-in)
+    'honest_llama_7B': 'jujipotle/honest_llama_7B', # Heads=48, alpha=15
+    # 'honest_llama2_chat_7B': 'likenneth/honest_llama2_chat_7B', # Heads=?, alpha=?
+    'honest_llama2_chat_7B': 'jujipotle/honest_llama2_chat_7B', # Heads=48, alpha=15
+    'honest_llama2_chat_13B': 'jujipotle/honest_llama2_chat_13B', # Heads=48, alpha=15
+    'honest_llama2_chat_70B': 'jujipotle/honest_llama2_chat_70B', # Heads=48, alpha=15
+    'honest_llama3_8B_instruct': 'jujipotle/honest_llama3_8B_instruct', # Heads=48, alpha=15
+    'honest_llama3_70B_instruct': 'jujipotle/honest_llama3_70B_instruct', # Heads=48, alpha=15
+    # Locally edited models (ITI baked-in)
+    'local_llama_7B': 'results_dump/edited_models_dump/llama_7B_seed_42_top_48_heads_alpha_15',
+    'local_llama2_chat_7B': 'results_dump/edited_models_dump/llama2_chat_7B_seed_42_top_48_heads_alpha_15',
+    'local_llama2_chat_13B': 'results_dump/edited_models_dump/llama2_chat_13B_seed_42_top_48_heads_alpha_15',
+    'local_llama2_chat_70B': 'results_dump/edited_models_dump/llama2_chat_70B_seed_42_top_48_heads_alpha_15',
+    'local_llama3_8B_instruct': 'results_dump/edited_models_dump/llama3_8B_instruct_seed_42_top_48_heads_alpha_15',
+    'local_llama3_70B_instruct': 'results_dump/edited_models_dump/llama3_70B_instruct_seed_42_top_48_heads_alpha_15'
 }
+
 def main(): 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default='llama_7B', choices=HF_NAMES.keys(), help='model name')
-    parser.add_argument("--model_prefix", type=str, default='', help='model prefix')
+    parser.add_argument('--model_name', type=str, default='llama_7B', choices=HF_NAMES.keys(), help='model name')
+    parser.add_argument('--model_prefix', type=str, default='', help='prefix to model name')
     parser.add_argument('--dataset_name', type=str, default='tqa_mc2', help='feature bank for training probes')
     parser.add_argument('--activations_dataset', type=str, default='tqa_gen_end_q', help='feature bank for calculating std along direction')
     parser.add_argument('--num_heads', type=int, default=48, help='K, number of top heads to intervene on')
-    parser.add_argument('--alpha', type=float, default=15, help='alpha, intervention strength')
+    parser.add_argument("--num_fold", type=int, default=2, help="number of folds")
     parser.add_argument('--val_ratio', type=float, help='ratio of validation set size to development set size', default=0.2)
-    parser.add_argument('--use_center_of_mass', action='store_true', help='use center of mass direction', default=False)
     parser.add_argument('--use_random_dir', action='store_true', help='use random direction', default=False)
     parser.add_argument('--device', type=int, default=0, help='device')
     parser.add_argument('--seed', type=int, default=42, help='seed')
+
     args = parser.parse_args()
 
     # set seeds
@@ -71,12 +87,14 @@ def main():
     golden_q_order = list(dataset["question"])
     df = df.sort_values(by='Question', key=lambda x: x.map({k: i for i, k in enumerate(golden_q_order)}))
     assert list(dataset['question']) == list(df["Question"])
+    
+    # get two folds using numpy
+    fold_idxs = np.array_split(np.arange(len(df)), args.num_fold)
 
     # create model
-    model_name = HF_NAMES[args.model_prefix + args.model_name]
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-
+    model_name_or_path = HF_NAMES[args.model_prefix + args.model_name]
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage = True, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True)
     # define number of layers and heads
     num_layers = model.config.num_hidden_layers
     num_heads = model.config.num_attention_heads
@@ -94,41 +112,29 @@ def main():
 
     separated_head_wise_activations, separated_labels, idxs_to_split_at = get_separated_activations(labels, head_wise_activations)
 
-    train_idxs = np.arange(len(df))
+    # run k-fold cross validation
+    results = []
+    for i in range(args.num_fold):
 
-    # pick a val set using numpy
-    train_set_idxs = np.random.choice(train_idxs, size=int(len(train_idxs)*(1-args.val_ratio)), replace=False)
-    val_set_idxs = np.array([x for x in train_idxs if x not in train_set_idxs])
+        train_idxs = np.concatenate([fold_idxs[j] for j in range(args.num_fold) if j != i])
+        test_idxs = fold_idxs[i]
 
-    # get directions
-    if args.use_center_of_mass:
-        com_directions = get_com_directions(num_layers, num_heads, train_set_idxs, val_set_idxs, separated_head_wise_activations, separated_labels)
-    else:
-        com_directions = None
-    top_heads, probes, _ = get_top_heads(train_set_idxs, val_set_idxs, separated_head_wise_activations, separated_labels, num_layers, num_heads, args.seed, args.num_heads, args.use_random_dir)
+        print(f"Running fold {i}")
 
-    print("Heads intervened: ", sorted(top_heads))
+        # pick a val set using numpy
+        train_set_idxs = np.random.choice(train_idxs, size=int(len(train_idxs)*(1-args.val_ratio)), replace=False)
+        val_set_idxs = np.array([x for x in train_idxs if x not in train_set_idxs])
 
-    interventions = get_interventions_dict(top_heads, probes, tuning_activations, num_heads, args.use_center_of_mass, args.use_random_dir, com_directions)
+        # save train and test splits
+        df.iloc[train_set_idxs].to_csv(f"splits/fold_{i}_train_seed_{args.seed}.csv", index=False)
+        df.iloc[val_set_idxs].to_csv(f"splits/fold_{i}_val_seed_{args.seed}.csv", index=False)
+        df.iloc[test_idxs].to_csv(f"splits/fold_{i}_test_seed_{args.seed}.csv", index=False)
 
-    for head_out_name, list_int_vec in interventions.items():
-        layer_no = int(head_out_name.split('.')[2])
-        displacement = np.zeros((int(num_heads), int(model.config.hidden_size / num_heads)))
-        for head_no, head_vec, std in list_int_vec:
-            displacement[head_no] = args.alpha * std * head_vec
-        device = model.model.layers[layer_no].self_attn.o_proj.weight.device.index
-        displacement = torch.tensor(rearrange(displacement, 'h d -> (h d)'), device=device)
-        # bias_tobe = F.linear(displacement.to(torch.float16), model.model.layers[layer_no].self_attn.o_proj.weight).to(device)
-        bias_tobe = displacement.to(torch.float16)
-        model.model.layers[layer_no].self_attn.o_proj.bias = torch.nn.parameter.Parameter(bias_tobe)
+        # probe
+        top_heads, probes, all_head_accs_np = get_top_heads(train_set_idxs, val_set_idxs, separated_head_wise_activations, separated_labels, num_layers, num_heads, args.seed, args.num_heads, args.use_random_dir)
+        np.save(f'../features/{args.model_name}_{args.dataset_name}_probe_acc_fold_{i}.npy', all_head_accs_np)
 
-    save_folder = f"results_dump/edited_models_dump/{args.model_name}_seed_{args.seed}_top_{args.num_heads}_heads_alpha_{int(args.alpha)}"
-    if os.path.exists(save_folder):
-      shutil.rmtree(save_folder)
-    os.makedirs(save_folder)
-    model.config.attention_bias = True
-    model.save_pretrained(save_folder, safe_serialization=False, max_shard_size="10GB")
-    tokenizer.save_pretrained(save_folder)
+        print("Heads intervened: ", sorted(top_heads))
 
 if __name__ == "__main__":
     main()
