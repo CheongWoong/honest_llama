@@ -8,12 +8,12 @@ import pandas as pd
 import numpy as np
 import argparse
 from datasets import load_dataset
+from nnsight import LanguageModel
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig
 
 import sys
 sys.path.append('../')
 from utils import alt_tqa_evaluate, flattened_idx_to_layer_head, layer_head_to_flattened_idx, get_interventions_dict, get_top_heads, get_separated_activations, get_com_directions
-import llama
 
 HF_NAMES = {
     # Base models
@@ -100,7 +100,9 @@ def main():
     # create model
     model_name_or_path = HF_NAMES[args.model_prefix + args.model_name]
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage = True, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True)
+    # model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage = True, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True)
+    model = LanguageModel(model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True)
+    model.eval()
     # define number of layers and heads
     num_layers = model.config.num_hidden_layers
     num_heads = model.config.num_attention_heads
@@ -144,18 +146,7 @@ def main():
 
         print("Heads intervened: ", sorted(top_heads))
     
-        interventions = get_interventions_dict(top_heads, probes, tuning_activations, num_heads, args.use_center_of_mass, args.use_random_dir, com_directions)
-
-        def lt_modulated_vector_add(head_output, layer_name, start_edit_location='lt'): 
-            head_output = rearrange(head_output, 'b s (h d) -> b s h d', h=num_heads)
-            for head, direction, proj_val_std in interventions[layer_name]:
-                direction_to_add = torch.tensor(direction).to(head_output.device.index)
-                if start_edit_location == 'lt': 
-                    head_output[:, -1, head, :] += args.alpha * proj_val_std * direction_to_add
-                else: 
-                    head_output[:, start_edit_location:, head, :] += args.alpha * proj_val_std * direction_to_add
-            head_output = rearrange(head_output, 'b s h d -> b s (h d)')
-            return head_output
+        interventions = get_interventions_dict(top_heads, probes, tuning_activations, num_heads, args.use_center_of_mass, args.use_random_dir, com_directions, args.alpha)
 
         filename = f'{args.model_prefix}{args.model_name}_seed_{args.seed}_top_{args.num_heads}_heads_alpha_{int(args.alpha)}_fold_{i}'
 
@@ -172,7 +163,7 @@ def main():
             summary_path=f'results_dump/summary_dump/{filename}.csv',
             device="cuda", 
             interventions=interventions, 
-            intervention_fn=lt_modulated_vector_add, 
+            intervention_fn=None, 
             instruction_prompt=args.instruction_prompt,
             judge_name=args.judge_name, 
             info_name=args.info_name
