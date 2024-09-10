@@ -12,7 +12,7 @@ from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoCon
 
 import sys
 sys.path.append('../')
-from utils import alt_tqa_evaluate, flattened_idx_to_layer_head, layer_head_to_flattened_idx, get_interventions_dict, get_top_heads, get_separated_activations, get_com_directions
+from utils import alt_tqa_evaluate, flattened_idx_to_layer_head, layer_head_to_flattened_idx, get_interventions_dict, get_top_heads, get_separated_activations, get_com_directions, save_probes
 
 HF_NAMES = {
     # Base models
@@ -126,13 +126,14 @@ def main():
         val_set_idxs = np.array([x for x in train_idxs if x not in train_set_idxs])
 
         # save train and test splits
-        df.iloc[train_set_idxs].to_csv(f"splits/fold_{i}_train_seed_{args.seed}.csv", index=False)
-        df.iloc[val_set_idxs].to_csv(f"splits/fold_{i}_val_seed_{args.seed}.csv", index=False)
-        df.iloc[test_idxs].to_csv(f"splits/fold_{i}_test_seed_{args.seed}.csv", index=False)
+        # df.iloc[train_set_idxs].to_csv(f"splits/fold_{i}_train_seed_{args.seed}.csv", index=False)
+        # df.iloc[val_set_idxs].to_csv(f"splits/fold_{i}_val_seed_{args.seed}.csv", index=False)
+        # df.iloc[test_idxs].to_csv(f"splits/fold_{i}_test_seed_{args.seed}.csv", index=False)
 
         # probe
         top_heads, probes, all_head_accs_np = get_top_heads(train_set_idxs, val_set_idxs, separated_head_wise_activations, separated_labels, num_layers, num_heads, args.seed, args.num_heads, args.use_random_dir)
         np.save(f'../features/{args.model_name}_{args.dataset_name}_probe_acc_fold_{i}.npy', all_head_accs_np)
+        save_probes(probes, f'../features/{args.model_name}_{args.dataset_name}_probe_fold_{i}.pkl')
 
         print("Heads intervened: ", sorted(top_heads))
 
