@@ -671,6 +671,62 @@ def get_top_heads(train_idxs, val_idxs, separated_activations, separated_labels,
 
     return top_heads, probes, all_head_accs_np
 
+def probe_top_1_head_with_top_k_neurons(train_idxs, val_idxs, separated_activations, separated_labels, num_layers, num_heads, seed, num_to_intervene, head_dim, use_random_dir=False, ranking='mean_diff'):
+
+    probes, all_head_accs_np = train_probes(seed, train_idxs, val_idxs, separated_activations, separated_labels, num_layers=num_layers, num_heads=num_heads)
+    all_head_accs_np = all_head_accs_np.reshape(num_layers, num_heads)
+
+    top_heads = []
+
+    top_accs = np.argsort(all_head_accs_np.reshape(num_heads*num_layers))[::-1][:num_to_intervene]
+    top_heads = [flattened_idx_to_layer_head(idx, num_heads) for idx in top_accs]
+
+    print(f'Analyzing the best head: {top_heads[0]}')
+    best_probe = probes[top_accs[0]]
+
+    all_k_accs = []
+    probes = []
+
+    all_X_train = np.concatenate([separated_activations[i] for i in train_idxs], axis = 0)
+    all_X_val = np.concatenate([separated_activations[i] for i in val_idxs], axis = 0)
+    y_train = np.concatenate([separated_labels[i] for i in train_idxs], axis = 0)
+    y_val = np.concatenate([separated_labels[i] for i in val_idxs], axis = 0)
+
+    layer, head = top_heads[0]
+    X_train = all_X_train[:,layer,head,:]
+    X_val = all_X_val[:,layer,head,:]
+
+    if ranking == 'mean_diff':
+        mean_diff = X_train[y_train > 0.5].mean(0) - X_train[y_train < 0.5].mean(0)
+        neuron_rank = np.argsort(np.abs(mean_diff))[::-1]
+    elif ranking == 'probe_coef':
+        neuron_rank = np.argsort(np.abs(best_probe.coef_[0]))[::-1]
+    elif ranking == 'random':
+        # np.random.seed(42)
+        neuron_rank = np.random.permutation(head_dim)
+    else:
+        raise Exception
+
+    for k in tqdm(range(1, head_dim), desc="train_probes_with_top_k_neurons"): 
+        top_k_idx = neuron_rank[:k]
+        clf = LogisticRegression(random_state=seed, max_iter=1000).fit(X_train[:,top_k_idx], y_train)
+        y_pred = clf.predict(X_train[:,top_k_idx])
+        y_val_pred = clf.predict(X_val[:,top_k_idx])
+        all_k_accs.append(accuracy_score(y_val, y_val_pred))
+        probes.append(clf)
+
+    for k in tqdm(range(1, head_dim), desc="train_probes_without_top_k_neurons"): 
+        without_top_k_idx = neuron_rank[k:]
+        clf = LogisticRegression(random_state=seed, max_iter=1000).fit(X_train[:,without_top_k_idx], y_train)
+        y_pred = clf.predict(X_train[:,without_top_k_idx])
+        y_val_pred = clf.predict(X_val[:,without_top_k_idx])
+        all_k_accs.append(accuracy_score(y_val, y_val_pred))
+        probes.append(clf)
+
+    all_k_accs_np = np.array(all_k_accs)
+
+    return top_heads, probes, all_k_accs_np
+
 def get_interventions_dict(top_heads, probes, tuning_activations, num_heads, use_center_of_mass, use_random_dir, com_directions, alpha): 
 
     hidden_dim = tuning_activations.shape[-1]
