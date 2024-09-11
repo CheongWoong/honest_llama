@@ -702,8 +702,10 @@ def probe_top_1_head_with_top_k_neurons(train_idxs, val_idxs, separated_activati
     elif ranking == 'probe_coef':
         neuron_rank = np.argsort(np.abs(best_probe.coef_[0]))[::-1]
     elif ranking == 'random':
-        # np.random.seed(42)
+        state = np.random.get_state()
+        np.random.seed(42)
         neuron_rank = np.random.permutation(head_dim)
+        np.random.set_state(state)
     else:
         raise Exception
 
