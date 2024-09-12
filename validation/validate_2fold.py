@@ -63,6 +63,9 @@ def main():
     parser.add_argument('--judge_name', type=str, required=False)
     parser.add_argument('--info_name', type=str, required=False)
     parser.add_argument('--instruction_prompt', default='default', help='instruction prompt for truthfulqa benchmarking, "default" or "informative"', type=str, required=False)
+    parser.add_argument('--ranking', type=str, default='none')
+    parser.add_argument('--k', type=int, default=0)
+    parser.add_argument('--remove_top_k', action='store_true', default=False)
 
     args = parser.parse_args()
 
@@ -146,7 +149,7 @@ def main():
 
         print("Heads intervened: ", sorted(top_heads))
     
-        interventions = get_interventions_dict(top_heads, probes, tuning_activations, num_heads, args.use_center_of_mass, args.use_random_dir, com_directions, args.alpha)
+        interventions = get_interventions_dict(top_heads, probes, tuning_activations, num_heads, args.use_center_of_mass, args.use_random_dir, com_directions, args.alpha, args.ranking, args.k, args.remove_top_k)
 
         filename = f'{args.model_prefix}{args.model_name}_seed_{args.seed}_top_{args.num_heads}_heads_alpha_{int(args.alpha)}_fold_{i}'
 
@@ -154,6 +157,11 @@ def main():
             filename += '_com'
         if args.use_random_dir:
             filename += '_random'
+        
+        if args.ranking != 'none' and args.k > 0:
+            filename += f'_ranking_{args.ranking}_k_{args.k}'
+            if args.remove_top_k:
+                filename += '_remove_top_k'
                                 
         curr_fold_results = alt_tqa_evaluate(
             models={args.model_name: model},

@@ -729,7 +729,7 @@ def probe_top_1_head_with_top_k_neurons(train_idxs, val_idxs, separated_activati
 
     return top_heads, probes, all_k_accs_np
 
-def get_interventions_dict(top_heads, probes, tuning_activations, num_heads, use_center_of_mass, use_random_dir, com_directions, alpha): 
+def get_interventions_dict(top_heads, probes, tuning_activations, num_heads, use_center_of_mass, use_random_dir, com_directions, alpha, ranking=None, k=0, remove_top_k=False): 
 
     hidden_dim = tuning_activations.shape[-1]
     interventions = {}
@@ -742,6 +742,31 @@ def get_interventions_dict(top_heads, probes, tuning_activations, num_heads, use
             direction = np.random.normal(size=(hidden_dim,))
         else: 
             direction = probes[layer_head_to_flattened_idx(layer, head, num_heads)].coef_
+
+        if ranking == 'none' or k <= 0:
+            pass
+        elif ranking == 'mean_diff':
+            mean_diff = com_directions[layer_head_to_flattened_idx(layer, head, num_heads)]
+            neuron_rank = np.argsort(np.abs(mean_diff))[::-1]
+        elif ranking == 'probe_coef':
+            neuron_rank = np.argsort(np.abs(probes[layer_head_to_flattened_idx(layer, head, num_heads)].coef_[0]))[::-1]
+        elif ranking == 'random':
+            head_dim = direction.shape[-1]
+            state = np.random.get_state()
+            np.random.seed(42)
+            neuron_rank = np.random.permutation(head_dim)
+            np.random.set_state(state)
+        else:
+            raise Exception
+
+        if ranking != 'none' and k > 0:
+            top_k_idx = neuron_rank[:k]
+            without_top_k_idx = neuron_rank[k:]
+            if not remove_top_k:
+                direction[...,without_top_k_idx] = 0
+            else:
+                direction[...,top_k_idx] = 0
+
         direction = direction / np.linalg.norm(direction)
         activations = tuning_activations[:,layer,head,:] # batch x hidden_dim
         proj_vals = activations @ direction.T
@@ -751,6 +776,29 @@ def get_interventions_dict(top_heads, probes, tuning_activations, num_heads, use
     for key in interventions:
         interventions[key] = rearrange(interventions[key], 'h d -> (h d)')
     return interventions
+
+# def get_interventions_dict(top_heads, probes, tuning_activations, num_heads, use_center_of_mass, use_random_dir, com_directions, alpha): 
+
+#     hidden_dim = tuning_activations.shape[-1]
+#     interventions = {}
+#     for layer, head in top_heads: 
+#         interventions[f"model.layers[{layer}].self_attn.o_proj.input"] = torch.zeros((num_heads, hidden_dim))
+#     for layer, head in top_heads:
+#         if use_center_of_mass: 
+#             direction = com_directions[layer_head_to_flattened_idx(layer, head, num_heads)]
+#         elif use_random_dir: 
+#             direction = np.random.normal(size=(hidden_dim,))
+#         else: 
+#             direction = probes[layer_head_to_flattened_idx(layer, head, num_heads)].coef_
+#         direction = direction / np.linalg.norm(direction)
+#         activations = tuning_activations[:,layer,head,:] # batch x hidden_dim
+#         proj_vals = activations @ direction.T
+#         proj_val_std = np.std(proj_vals)
+#         interventions[f"model.layers[{layer}].self_attn.o_proj.input"][head,:] += alpha * proj_val_std * direction.squeeze()
+
+#     for key in interventions:
+#         interventions[key] = rearrange(interventions[key], 'h d -> (h d)')
+#     return interventions
 
 def get_separated_activations(labels, head_wise_activations): 
 
